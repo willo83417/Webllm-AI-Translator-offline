@@ -1,0 +1,8 @@
+{
+  "name": "Webllm AI Translator offline",
+  "description": "Design a translation-focused website using a TypeScript-based front-end framework. The LLM functionality will be provided by @mlc-ai/web-llm, ASR is planned to use whispe ONNX, and OCR is planned to use ppocrv5.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
