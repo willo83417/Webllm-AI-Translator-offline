@@ -1,5 +1,4 @@
 
-
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import TranslationInput from './components/TranslationInput';
@@ -21,13 +20,113 @@ import {
 } from './services/offlineService';
 import { processAudioForTranscription, checkAsrModelCacheStatus, clearAsrCache } from './services/asrService';
 import { useWebSpeech } from './hooks/useWebSpeech';
-import type { Language, TranslationHistoryItem, ModelLoadingProgress, AsrModel, CustomOfflineModel } from './types';
-import { LANGUAGES, ASR_MODELS } from './constants';
+import { usePaddleOcr } from './hooks/usePaddleOcr';
+import type { Language, TranslationHistoryItem, ModelLoadingProgress, AsrModel, CustomOfflineModel, EsearchOCROutput, EsearchOCRItem } from './types';
+import { LANGUAGES, ASR_MODELS, OCR_MODELS } from './constants';
 
 interface AppMessage {
     type: 'log' | 'transcription' | 'loaded' | 'error' | 'progress';
     payload: any;
 }
+
+// --- OCR Processing Logic ---
+type ProcessedItem = EsearchOCRItem & {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+    centerX: number;
+    centerY: number;
+    height: number;
+};
+
+const enhanceItem = (item: EsearchOCRItem): ProcessedItem => {
+    const xs = item.box.map(p => p[0]);
+    const ys = item.box.map(p => p[1]);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    return { ...item, minX, maxX, minY, maxY, centerX: (minX + maxX) / 2, centerY: (minY + maxY) / 2, height: maxY - minY };
+};
+
+const groupAndSortLines = (items: ProcessedItem[]) => {
+    const lines: ProcessedItem[][] = [];
+    items.sort((a, b) => a.centerY - b.centerY);
+    items.forEach(item => {
+        const line = lines.find(l => {
+            const avgY = l.reduce((acc, i) => acc + i.centerY, 0) / l.length;
+            const avgH = l.reduce((acc, i) => acc + i.height, 0) / l.length;
+            return Math.abs(item.centerY - avgY) < (avgH * 0.6);
+        });
+        if (line) {
+            line.push(item);
+        } else {
+            lines.push([item]);
+        }
+    });
+    lines.sort((a, b) => {
+        const getLineTopY = (l: ProcessedItem[]) => Math.min(...l.map(i => i.minY));
+        return getLineTopY(a) - getLineTopY(b);
+    });
+    return lines.map(line => {
+        line.sort((a, b) => a.minX - b.minX);
+        return line.map(i => i.text).join(' ');
+    }).join('\n');
+};
+
+const detectAndSplitColumns = (rawItems: EsearchOCRItem[]): string => {
+    if (!rawItems || rawItems.length === 0) return "";
+    const items = rawItems.map(enhanceItem);
+    if (items.length < 2) return groupAndSortLines(items);
+    const minX = Math.min(...items.map(i => i.minX));
+    const maxX = Math.max(...items.map(i => i.maxX));
+    const width = maxX - minX;
+    const coverage = new Int32Array(Math.ceil(width) + 1);
+    items.forEach(item => {
+        const start = Math.floor(item.minX - minX);
+        const end = Math.ceil(item.maxX - minX);
+        for (let i = start; i < end; i++) {
+            if (i >= 0 && i < coverage.length) coverage[i]++;
+        }
+    });
+    const searchStart = Math.floor(width * 0.25);
+    const searchEnd = Math.floor(width * 0.75);
+    let maxGapSize = 0, maxGapCenter = -1, currentGapStart = -1;
+    for (let i = searchStart; i <= searchEnd; i++) {
+        if (coverage[i] === 0) {
+            if (currentGapStart === -1) currentGapStart = i;
+        } else {
+            if (currentGapStart !== -1) {
+                const gapSize = i - currentGapStart;
+                if (gapSize > maxGapSize) {
+                    maxGapSize = gapSize;
+                    maxGapCenter = currentGapStart + (gapSize / 2);
+                }
+                currentGapStart = -1;
+            }
+        }
+    }
+    const hasMultipleColumns = maxGapCenter !== -1 && maxGapSize > 10;
+    if (hasMultipleColumns) {
+        const splitX = minX + maxGapCenter;
+        const leftItems = items.filter(i => i.centerX < splitX);
+        const rightItems = items.filter(i => i.centerX >= splitX);
+        const leftText = groupAndSortLines(leftItems);
+        const rightText = groupAndSortLines(rightItems);
+        return `${leftText}\n\n${rightText}`;
+    }
+    return groupAndSortLines(items);
+};
+
+const processOcrResult = (result: EsearchOCROutput) => {
+    const rawItems = result.src;
+    if (!rawItems || rawItems.length === 0) {
+        return result.parragraphs?.map(p => p.text).join('\n') || "";
+    }
+    return detectAndSplitColumns(rawItems);
+};
+// --- END OCR ---
 
 const App: React.FC = () => {
     const { t } = useTranslation();
@@ -47,7 +146,7 @@ const App: React.FC = () => {
     
     // Shared settings
     const [apiKey, setApiKey] = useState('');
-    const [modelName, setModelName] = useState('gemini-2.5-flash');
+    const [modelName, setModelName] = useState('gemini-3-flash-preview');
 
     // Online provider settings
     const [onlineProvider, setOnlineProvider] = useState('gemini');
@@ -96,6 +195,10 @@ const App: React.FC = () => {
     const [audioGainValue, setAudioGainValue] = useState(1.0);
     const [recordingCountdown, setRecordingCountdown] = useState<number | null>(null);
 
+    // OCR State
+    const { status: ocrEngineStatus, error: ocrEngineError, recognize, initializeOcr } = usePaddleOcr();
+    const [selectedOcrModel, setSelectedOcrModel] = useState<keyof typeof OCR_MODELS>('ch_v5');
+
     type NotificationType = 'error' | 'success' | 'info';
     interface Notification {
         message: string;
@@ -139,6 +242,89 @@ const App: React.FC = () => {
     }, []);
 
     const isOfflineModelReady = isOfflineModeEnabled && !!offlineModelName && isOfflineModelInitialized;
+
+    const performTranslate = useCallback(async (textToTranslate: string) => {
+        if (!textToTranslate.trim()) {
+            setTranslatedText('');
+            return;
+        }
+
+        if (translationAbortControllerRef.current) {
+            translationAbortControllerRef.current.abort();
+        }
+        const controller = new AbortController();
+        translationAbortControllerRef.current = controller;
+    
+        setIsLoading(true);
+        setTranslatedText('');
+    
+        let finalResult = '';
+        const onChunk = (chunk: string) => {
+            finalResult += chunk;
+            setTranslatedText(prev => prev + chunk);
+        };
+    
+        try {
+            if (isOfflineModeEnabled) {
+                if (!offlineModelName) throw new Error('Please select an offline model in settings.');
+                if (isOfflineModelInitializing) throw new Error('Offline model is still initializing.');
+                if (!isOfflineModelReady) {
+                    await initializeOfflineModel(offlineModelName, customModels, handleModelLoadingProgress);
+                    setIsOfflineModelInitialized(true);
+                    setLoadedOfflineModelId(offlineModelName);
+                }
+                
+                finalResult = await translateOfflineStream(
+                    textToTranslate, sourceLang.code, targetLang.code, isTwoStepJpCn, 
+                    { 
+                        temperature: offlineTemperature, 
+                        maxTokens: offlineMaxTokens,
+                        presencePenalty: offlinePresencePenalty,
+                        frequencyPenalty: offlineFrequencyPenalty
+                    },
+                    onChunk, controller.signal
+                );
+            } else {
+                if (!isOnline) throw new Error("You are offline. Enable offline mode or connect to the internet.");
+    
+                if (onlineProvider === 'openai') {
+                    if (!apiKey) throw new Error("OpenAI API Key is not set. Please add it in the settings.");
+                    if (!openaiApiUrl) throw new Error("OpenAI API URL is not set. Please add it in the settings.");
+                    finalResult = await translateTextOpenAIStream(textToTranslate, t(sourceLang.name, { lng: 'en' }), t(targetLang.name, { lng: 'en' }), apiKey, modelName, openaiApiUrl, onChunk, controller.signal);
+                } else {
+                    if (!apiKey) throw new Error("Gemini API Key is not set. Please add it in the settings.");
+                    finalResult = await translateTextGeminiStream(textToTranslate, t(sourceLang.name, { lng: 'en' }), t(targetLang.name, { lng: 'en' }), apiKey, modelName, onChunk, controller.signal);
+                }
+            }
+    
+            const newHistoryItem: TranslationHistoryItem = {
+                id: Date.now(), inputText: textToTranslate, translatedText: finalResult, sourceLang, targetLang,
+            };
+            setHistory(prevHistory => {
+                const updatedHistory = [newHistoryItem, ...prevHistory].slice(0, 50);
+                localStorage.setItem('translation-history', JSON.stringify(updatedHistory));
+                return updatedHistory;
+            });
+    
+        } catch (err) {
+            if (err instanceof DOMException && err.name === 'AbortError') {
+                console.log("Translation cancelled by user.");
+                setTranslatedText(finalResult);
+                return;
+            }
+            const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+            showNotification(t('notifications.translationFailed', { errorMessage }), 'error');
+            if (err instanceof Error && (err.message.includes('select an offline model') || err.message.includes('API Key is not set') || err.message.includes('API URL is not set'))) {
+                setIsSettingsOpen(true);
+            }
+            console.error(err);
+        } finally {
+            setIsLoading(false);
+            if (translationAbortControllerRef.current === controller) {
+                translationAbortControllerRef.current = null;
+            }
+        }
+    }, [sourceLang, targetLang, apiKey, modelName, isOnline, isOfflineModeEnabled, offlineModelName, isOfflineModelReady, isOfflineModelInitializing, showNotification, onlineProvider, openaiApiUrl, isTwoStepJpCn, t, offlineTemperature, offlineMaxTokens, offlinePresencePenalty, offlineFrequencyPenalty, handleModelLoadingProgress, customModels]);
 
     const performReverseTranslate = useCallback(async (textToTranslate: string) => {
         if (!textToTranslate.trim()) {
@@ -262,7 +448,7 @@ const App: React.FC = () => {
     const initializeWorker = useCallback(() => {
         // The underlying race condition that caused worker re-initialization has been fixed.
         // This code is now safe to run and is required for offline ASR to function.
-        if (worker.current) {
+        /*if (worker.current) {
             worker.current.terminate();
         }
         const newWorker = new Worker(new URL('./services/worker.ts', import.meta.url), {
@@ -270,7 +456,7 @@ const App: React.FC = () => {
         });
         newWorker.addEventListener('message', onWorkerMessage);
         worker.current = newWorker;
-        console.log('ASR Worker initialized.');
+        console.log('ASR Worker initialized.');*/
     }, [onWorkerMessage]);
 
     useEffect(() => {
@@ -382,6 +568,9 @@ const App: React.FC = () => {
         const savedCustomModels = localStorage.getItem('custom-offline-models');
         if (savedCustomModels) setCustomModels(JSON.parse(savedCustomModels));
 
+        const savedOcrModel = localStorage.getItem('selected-ocr-model');
+        if (savedOcrModel) setSelectedOcrModel(savedOcrModel as any);
+
         const prebuiltCached = listCachedModels();
         const customModelIds = savedCustomModels ? JSON.parse(savedCustomModels).map((m: CustomOfflineModel) => m.id) : [];
         setCachedModels(new Set([...prebuiltCached, ...customModelIds]));
@@ -465,90 +654,6 @@ const App: React.FC = () => {
             unload();
         }
     }, [offlineModelName, isOfflineModeEnabled, loadedOfflineModelId, customModels, handleModelLoadingProgress, showNotification, t]);
-
-
-    const performTranslate = useCallback(async (textToTranslate: string) => {
-        if (!textToTranslate.trim()) {
-            setTranslatedText('');
-            return;
-        }
-
-        if (translationAbortControllerRef.current) {
-            translationAbortControllerRef.current.abort();
-        }
-        const controller = new AbortController();
-        translationAbortControllerRef.current = controller;
-    
-        setIsLoading(true);
-        setTranslatedText('');
-    
-        let finalResult = '';
-        const onChunk = (chunk: string) => {
-            finalResult += chunk;
-            setTranslatedText(prev => prev + chunk);
-        };
-    
-        try {
-            if (isOfflineModeEnabled) {
-                if (!offlineModelName) throw new Error('Please select an offline model in settings.');
-                if (isOfflineModelInitializing) throw new Error('Offline model is still initializing.');
-                if (!isOfflineModelReady) {
-                    await initializeOfflineModel(offlineModelName, customModels, handleModelLoadingProgress);
-                    setIsOfflineModelInitialized(true);
-                    setLoadedOfflineModelId(offlineModelName);
-                }
-                
-                finalResult = await translateOfflineStream(
-                    textToTranslate, sourceLang.code, targetLang.code, isTwoStepJpCn, 
-                    { 
-                        temperature: offlineTemperature, 
-                        maxTokens: offlineMaxTokens,
-                        presencePenalty: offlinePresencePenalty,
-                        frequencyPenalty: offlineFrequencyPenalty
-                    },
-                    onChunk, controller.signal
-                );
-            } else {
-                if (!isOnline) throw new Error("You are offline. Enable offline mode or connect to the internet.");
-    
-                if (onlineProvider === 'openai') {
-                    if (!apiKey) throw new Error("OpenAI API Key is not set. Please add it in the settings.");
-                    if (!openaiApiUrl) throw new Error("OpenAI API URL is not set. Please add it in the settings.");
-                    finalResult = await translateTextOpenAIStream(textToTranslate, t(sourceLang.name, { lng: 'en' }), t(targetLang.name, { lng: 'en' }), apiKey, modelName, openaiApiUrl, onChunk, controller.signal);
-                } else {
-                    if (!apiKey) throw new Error("Gemini API Key is not set. Please add it in the settings.");
-                    finalResult = await translateTextGeminiStream(textToTranslate, t(sourceLang.name, { lng: 'en' }), t(targetLang.name, { lng: 'en' }), apiKey, modelName, onChunk, controller.signal);
-                }
-            }
-    
-            const newHistoryItem: TranslationHistoryItem = {
-                id: Date.now(), inputText: textToTranslate, translatedText: finalResult, sourceLang, targetLang,
-            };
-            setHistory(prevHistory => {
-                const updatedHistory = [newHistoryItem, ...prevHistory].slice(0, 50);
-                localStorage.setItem('translation-history', JSON.stringify(updatedHistory));
-                return updatedHistory;
-            });
-    
-        } catch (err) {
-            if (err instanceof DOMException && err.name === 'AbortError') {
-                console.log("Translation cancelled by user.");
-                setTranslatedText(finalResult);
-                return;
-            }
-            const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
-            showNotification(t('notifications.translationFailed', { errorMessage }), 'error');
-            if (err instanceof Error && (err.message.includes('select an offline model') || err.message.includes('API Key is not set') || err.message.includes('API URL is not set'))) {
-                setIsSettingsOpen(true);
-            }
-            console.error(err);
-        } finally {
-            setIsLoading(false);
-            if (translationAbortControllerRef.current === controller) {
-                translationAbortControllerRef.current = null;
-            }
-        }
-    }, [sourceLang, targetLang, apiKey, modelName, isOnline, isOfflineModeEnabled, offlineModelName, isOfflineModelReady, isOfflineModelInitializing, showNotification, onlineProvider, openaiApiUrl, isTwoStepJpCn, t, offlineTemperature, offlineMaxTokens, offlinePresencePenalty, offlineFrequencyPenalty, handleModelLoadingProgress, customModels]);
 
     const handleTranslate = useCallback(() => {
         performTranslate(inputText);
@@ -836,8 +941,28 @@ const App: React.FC = () => {
 
         try {
             if (isOfflineModeEnabled) {
-                showNotification(t('notifications.offlineFeatureUnavailable'), 'info');
-                setInputText('');
+                if (ocrEngineStatus !== 'ready') {
+                    throw new Error(t('notifications.ocrNotReady'));
+                }
+                const image = new Image();
+                image.src = imageDataUrl;
+                await new Promise((resolve, reject) => {
+                    image.onload = resolve;
+                    image.onerror = reject;
+                });
+                const recognitionData = await recognize(image);
+                if (!recognitionData) {
+                    throw new Error('OCR recognition returned no data.');
+                }
+                const extractedText = processOcrResult(recognitionData.result);
+                setInputText(extractedText);
+
+                if (extractedText.trim()) {
+                    await performTranslate(extractedText);
+                } else {
+                    setTranslatedText('');
+                    setIsLoading(false);
+                }
                 return;
             }
 
@@ -869,10 +994,11 @@ const App: React.FC = () => {
             const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
             showNotification(t('notifications.imageProcessingFailed', { errorMessage }), 'error');
             setInputText('');
-        } finally {
             setIsLoading(false);
+        } finally {
+            // setIsLoading is handled inside the logic now
         }
-    }, [isOfflineModeEnabled, isOnline, apiKey, modelName, targetLang, sourceLang, showNotification, onlineProvider, openaiApiUrl, t]);
+    }, [isOfflineModeEnabled, isOnline, apiKey, modelName, targetLang, sourceLang, showNotification, onlineProvider, openaiApiUrl, t, ocrEngineStatus, recognize, performTranslate]);
 
     const handleSaveSettings = (
         newApiKey: string, 
@@ -893,7 +1019,8 @@ const App: React.FC = () => {
         newOfflinePresencePenalty: number,
         newOfflineFrequencyPenalty: number,
         newIsNoiseCancellationEnabled: boolean,
-        newAudioGainValue: number
+        newAudioGainValue: number,
+        newSelectedOcrModel: keyof typeof OCR_MODELS
     ) => {
         setApiKey(newApiKey);
         setModelName(newModelName);
@@ -914,6 +1041,7 @@ const App: React.FC = () => {
         setOfflineFrequencyPenalty(newOfflineFrequencyPenalty);
         setIsNoiseCancellationEnabled(newIsNoiseCancellationEnabled);
         setAudioGainValue(newAudioGainValue);
+        setSelectedOcrModel(newSelectedOcrModel);
         
         localStorage.setItem('api-key', newApiKey);
         localStorage.setItem('model-name', newModelName);
@@ -934,6 +1062,7 @@ const App: React.FC = () => {
         localStorage.setItem('offline-frequency-penalty', newOfflineFrequencyPenalty.toString());
         localStorage.setItem('is-noise-cancellation-enabled', JSON.stringify(newIsNoiseCancellationEnabled));
         localStorage.setItem('audio-gain-value', JSON.stringify(newAudioGainValue));
+        localStorage.setItem('selected-ocr-model', newSelectedOcrModel);
     };
 
     const handleSelectHistory = (item: TranslationHistoryItem) => {
@@ -1141,7 +1270,7 @@ const App: React.FC = () => {
                         setInputText={setInputText}
                         sourceLang={sourceLang}
                         setSourceLang={setSourceLang}
-                        isLoading={isLoading || isOfflineModelInitializing || isAsrInitializing}
+                        isLoading={isLoading || isOfflineModelInitializing || isAsrInitializing || ocrEngineStatus === 'initializing'}
                         onTranslate={handleTranslate}
                         onCancel={handleCancelTranslation}
                         isRecording={isRecording}
@@ -1213,6 +1342,10 @@ const App: React.FC = () => {
                 onClearAsrCache={handleClearAsrCache}
                 currentIsNoiseCancellationEnabled={isNoiseCancellationEnabled}
                 currentAudioGainValue={audioGainValue}
+                // OCR Props
+                ocrEngineStatus={ocrEngineStatus}
+                onInitializeOcr={initializeOcr}
+                currentSelectedOcrModel={selectedOcrModel}
             />
 
             <HistoryModal
