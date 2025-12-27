@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { XIcon, TrashIcon } from './icons';
@@ -15,6 +16,7 @@ interface SettingsModalProps {
         asrModelId: string,
         isOfflineEnabled: boolean,
         isOfflineAsrEnabled: boolean,
+        isWebSpeechApiEnabled: boolean,
         onlineProvider: string,
         openaiApiUrl: string,
         isOfflineTtsEnabled: boolean,
@@ -37,6 +39,7 @@ interface SettingsModalProps {
     currentOfflineModelName: string;
     currentIsOfflineModeEnabled: boolean;
     currentIsOfflineAsrEnabled: boolean;
+    currentIsWebSpeechApiEnabled: boolean;
     currentAsrModelId: string;
     currentIsTwoStepJpCnEnabled: boolean;
     modelLoadingProgress: ModelLoadingProgress;
@@ -83,6 +86,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     currentOfflineModelName,
     currentIsOfflineModeEnabled,
     currentIsOfflineAsrEnabled,
+    currentIsWebSpeechApiEnabled,
     currentAsrModelId,
     currentIsTwoStepJpCnEnabled,
     modelLoadingProgress,
@@ -127,6 +131,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     const [offlineModelName, setOfflineModelName] = useState(currentOfflineModelName);
     const [isOfflineEnabled, setIsOfflineEnabled] = useState(currentIsOfflineModeEnabled);
     const [isOfflineAsrEnabled, setIsOfflineAsrEnabled] = useState(currentIsOfflineAsrEnabled);
+    const [isWebSpeechApiEnabled, setIsWebSpeechApiEnabled] = useState(currentIsWebSpeechApiEnabled);
     const [asrModelId, setAsrModelId] = useState(currentAsrModelId);
     const [isTwoStepJpCnEnabled, setIsTwoStepJpCnEnabled] = useState(currentIsTwoStepJpCnEnabled);
     
@@ -162,6 +167,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
             setOfflineModelName(currentOfflineModelName);
             setIsOfflineEnabled(currentIsOfflineModeEnabled);
             setIsOfflineAsrEnabled(currentIsOfflineAsrEnabled);
+            setIsWebSpeechApiEnabled(currentIsWebSpeechApiEnabled);
             setAsrModelId(currentAsrModelId);
             setIsTwoStepJpCnEnabled(currentIsTwoStepJpCnEnabled);
             setIsOfflineTtsEnabled(currentIsOfflineTtsEnabled);
@@ -178,7 +184,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
         }
     }, [
         isOpen, currentApiKey, currentModelName, currentOnlineProvider, currentOpenaiApiUrl, 
-        currentOfflineModelName, currentIsOfflineModeEnabled, currentIsOfflineAsrEnabled, currentAsrModelId,
+        currentOfflineModelName, currentIsOfflineModeEnabled, currentIsOfflineAsrEnabled, currentIsWebSpeechApiEnabled, currentAsrModelId,
         currentIsTwoStepJpCnEnabled, currentIsOfflineTtsEnabled, currentOfflineTtsVoiceURI, currentOfflineTtsRate, 
         currentOfflineTtsPitch, currentOfflineTemperature, currentOfflineMaxTokens, currentOfflinePresencePenalty, 
         currentOfflineFrequencyPenalty, currentIsNoiseCancellationEnabled, currentAudioGainValue, currentSelectedOcrModel
@@ -213,7 +219,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
     
     const handleSave = () => {
         onSave(
-            apiKey, modelName, offlineModelName, asrModelId, isOfflineEnabled, isOfflineAsrEnabled, onlineProvider, openaiApiUrl,
+            apiKey, modelName, offlineModelName, asrModelId, isOfflineEnabled, isOfflineAsrEnabled, isWebSpeechApiEnabled, onlineProvider, openaiApiUrl,
             isOfflineTtsEnabled, offlineTtsVoiceURI, offlineTtsRate, offlineTtsPitch, isTwoStepJpCnEnabled,
             offlineTemperature, offlineMaxTokens, offlinePresencePenalty, offlineFrequencyPenalty,
             isNoiseCancellationEnabled, audioGainValue, selectedOcrModel
@@ -223,13 +229,14 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
     const handleClear = () => {
         setApiKey('');
-        setModelName('gemini-3-flash-preview');
+        setModelName('gemini-2.5-flash');
         setOnlineProvider('gemini');
         setOpenaiApiUrl('');
         setOfflineModelName('');
         setAsrModelId(ASR_MODELS[0].id);
         setIsOfflineEnabled(false);
         setIsOfflineAsrEnabled(false);
+        setIsWebSpeechApiEnabled(true);
         setIsTwoStepJpCnEnabled(false);
         setIsOfflineTtsEnabled(false);
         setOfflineTtsVoiceURI('');
@@ -247,7 +254,7 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
 
         onClearCache();
         onClearAsrCache();
-        onSave('', 'gemini-3-flash-preview', '', ASR_MODELS[0].id, false, false, 'gemini', '', false, '', 1, 1, false, 0.3, 2048, 0.1, 0.1, false, 1.0, 'ch_v5');
+        onSave('', 'gemini-2.5-flash', '', ASR_MODELS[0].id, false, false, true, 'gemini', '', false, '', 1, 1, false, 0.3, 2048, 0.1, 0.1, false, 1.0, 'ch_v5');
     };
     
     const handleLoadOcrModel = async () => {
@@ -557,10 +564,23 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
                     )}
                     {activeTab === 'speech' && (
                          <div role="tabpanel" id="speech-settings" aria-labelledby="speech-tab" className="space-y-6">
+                            <ToggleSwitch
+                                id="web-speech-toggle"
+                                isEnabled={isWebSpeechApiEnabled}
+                                setIsEnabled={setIsWebSpeechApiEnabled}
+                                title={t('settings.enableWebSpeechLabel')}
+                                description={t('settings.enableWebSpeechDescription')}
+                                disabled={isOfflineAsrEnabled}
+                             />
+                             <div className="border-t border-gray-200"></div>
                              <ToggleSwitch
                                 id="asr-toggle"
                                 isEnabled={isOfflineAsrEnabled}
-                                setIsEnabled={setIsOfflineAsrEnabled}
+                                setIsEnabled={(enabled) => {
+                                    setIsOfflineAsrEnabled(enabled);
+                                    // If enabling offline ASR, disable web speech API
+                                    if (enabled) setIsWebSpeechApiEnabled(false);
+                                }}
                                 title={t('settings.enableOfflineAsrLabel')}
                                 description={t('settings.enableOfflineAsrDescription')}
                              />

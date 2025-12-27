@@ -1,3 +1,5 @@
+
+
 // services/openaiService.ts
 
 export const translateTextStream = async (
@@ -174,5 +176,55 @@ export const translateImage = async (
             throw error;
         }
         throw new Error('OpenAI API request for image translation failed.');
+    }
+};
+
+export const transcribeAudioOpenAI = async (
+    audioBlob: Blob,
+    language: string,
+    apiKey: string,
+    apiUrl: string,
+    signal: AbortSignal
+): Promise<string> => {
+    if (!apiKey) throw new Error('OpenAI API Key is not set.');
+    if (!apiUrl) throw new Error('OpenAI API URL is not set.');
+
+    const formData = new FormData();
+    // Create a File object from the Blob to send to the API.
+    formData.append('file', new File([audioBlob], "audio.webm", { type: audioBlob.type }));
+    formData.append('model', 'whisper-1'); // Use the dedicated Whisper model
+    
+    if (language !== 'auto') {
+        formData.append('language', language); // e.g., 'en', 'zh'
+    }
+
+    try {
+        const response = await fetch(`${apiUrl}/v1/audio/transcriptions`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+            },
+            body: formData,
+            signal,
+        });
+
+        if (!response.ok) {
+            if (signal.aborted) {
+                 throw new DOMException('Request aborted by user', 'AbortError');
+            }
+            const errorData = await response.json();
+            throw new Error(errorData.error?.message || `OpenAI audio transcription failed with status ${response.status}`);
+        }
+
+        const result = await response.json();
+        return result.text;
+    } catch (error) {
+        console.error('Error transcribing audio with OpenAI:', error);
+        if (error instanceof Error) {
+            if (error.name === 'AbortError') {
+                throw error;
+            }
+        }
+        throw new Error('OpenAI API audio transcription request failed.');
     }
 };

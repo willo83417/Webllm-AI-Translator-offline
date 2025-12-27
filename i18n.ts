@@ -1,4 +1,5 @@
 
+
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import LanguageDetector from 'i18next-browser-languagedetector';
@@ -94,6 +95,8 @@ const resources = {
         clearAsrCacheButton: 'Clear ASR Model Cache',
         enableOfflineLabel: 'Enable Offline Translation',
         enableOfflineDescription: 'Use local model for translations.',
+        enableWebSpeechLabel: 'Enable Web Speech API',
+        enableWebSpeechDescription: 'If on, use browser\'s built-in speech recognition for online mode. If off, send audio to the online provider\'s API for transcription.',
         enableOfflineAsrLabel: 'Enable Offline Speech Recognition',
         enableOfflineAsrDescription: 'Use local model for speech input. If off, uses browser\'s speech API.',
         enableTwoStepLabel: 'High-Accuracy JP→ZH Mode',
@@ -160,9 +163,11 @@ const resources = {
         customModelSelected: 'Custom model has been selected.',
         cacheClearError: 'Please enable offline mode and select a model before clearing the cache.',
         transcribing: '[Transcribing...]',
+        transcribingApi: '[Transcribing via API...]',
         asrReady: 'Speech recognition model is ready.',
         asrFailed: 'Failed to initialize speech recognition model: {{error}}',
         asrModelDeleted: 'ASR model cache cleared successfully.',
+        asrModelUnloaded: 'Offline speech model unloaded successfully.',
         asrOnlineUnavailable: 'Offline ASR is only available in Offline Translation Mode.',
         modelIdleUnloaded: 'Offline model unloaded due to inactivity to save resources. It will reload on next use.',
         ocrNotReady: 'OCR engine not ready. Please initialize it in Settings > PaddleOCR v5.',
@@ -267,6 +272,8 @@ const resources = {
         clearAsrCacheButton: '清除 ASR 模型快取',
         enableOfflineLabel: '啟用離線翻譯',
         enableOfflineDescription: '使用本機模型進行翻譯。',
+        enableWebSpeechLabel: '啟用 Web Speech API',
+        enableWebSpeechDescription: '關閉後，使用線上供應商的 API 進行辨識。',
         enableOfflineAsrLabel: '啟用離線語音辨識',
         enableOfflineAsrDescription: '使用本機模型進行語音輸入。若關閉，則使用瀏覽器內建的語音 API。',
         enableTwoStepLabel: '高準確度 日→中 模式',
@@ -333,9 +340,11 @@ const resources = {
         customModelSelected: '已選擇自訂模型。',
         cacheClearError: '請先啟用離線模式並選擇一個模型，然後再清除快取。',
         transcribing: '[語音轉換文字中...]',
+        transcribingApi: '[透過 API 轉換語音中...]',
         asrReady: '語音辨識模型已就緒。',
         asrFailed: '語音辨識模型初始化失敗：{{error}}',
         asrModelDeleted: 'ASR 模型快取已清除成功。',
+        asrModelUnloaded: '離線語音模型已成功卸載。',
         asrOnlineUnavailable: '離線 ASR 僅在離線翻譯模式下可用。',
         modelIdleUnloaded: '離線模型因閒置而卸載以節省資源，下次使用時將自動重新載入。',
         ocrNotReady: 'OCR 引擎尚未就緒。請在 設定 > PaddleOCR v5 中進行初始化。',

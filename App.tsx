@@ -1,4 +1,5 @@
 
+
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import TranslationInput from './components/TranslationInput';
@@ -6,8 +7,8 @@ import TranslationOutput from './components/TranslationOutput';
 import CameraView from './components/CameraView';
 import SettingsModal from './components/SettingsModal';
 import HistoryModal from './components/HistoryModal';
-import { translateTextStream as translateTextGeminiStream, translateImage as translateImageGemini } from './services/geminiService';
-import { translateTextStream as translateTextOpenAIStream, translateImage as translateImageOpenAI } from './services/openaiService';
+import { translateTextStream as translateTextGeminiStream, translateImage as translateImageGemini, transcribeAudioGemini } from './services/geminiService';
+import { translateTextStream as translateTextOpenAIStream, translateImage as translateImageOpenAI, transcribeAudioOpenAI } from './services/openaiService';
 import { 
     initializeOfflineModel, 
     unloadOfflineModel, 
@@ -25,7 +26,7 @@ import type { Language, TranslationHistoryItem, ModelLoadingProgress, AsrModel, 
 import { LANGUAGES, ASR_MODELS, OCR_MODELS } from './constants';
 
 interface AppMessage {
-    type: 'log' | 'transcription' | 'loaded' | 'error' | 'progress';
+    type: 'log' | 'transcription' | 'loaded' | 'error' | 'progress' | 'unloaded';
     payload: any;
 }
 
@@ -146,7 +147,7 @@ const App: React.FC = () => {
     
     // Shared settings
     const [apiKey, setApiKey] = useState('');
-    const [modelName, setModelName] = useState('gemini-3-flash-preview');
+    const [modelName, setModelName] = useState('gemini-2.5-flash');
 
     // Online provider settings
     const [onlineProvider, setOnlineProvider] = useState('gemini');
@@ -184,7 +185,8 @@ const App: React.FC = () => {
     const [offlinePresencePenalty, setOfflinePresencePenalty] = useState(0.1);
     const [offlineFrequencyPenalty, setOfflineFrequencyPenalty] = useState(0.1);
     
-    // ASR state
+    // Speech Recognition state
+    const [isWebSpeechApiEnabled, setIsWebSpeechApiEnabled] = useState(true);
     const [isOfflineAsrEnabled, setIsOfflineAsrEnabled] = useState(false);
     const [asrModelId, setAsrModelId] = useState(ASR_MODELS[0].id); // Default to the first model
     const [isAsrInitializing, setIsAsrInitializing] = useState(false);
@@ -194,6 +196,7 @@ const App: React.FC = () => {
     const [isNoiseCancellationEnabled, setIsNoiseCancellationEnabled] = useState(false);
     const [audioGainValue, setAudioGainValue] = useState(1.0);
     const [recordingCountdown, setRecordingCountdown] = useState<number | null>(null);
+    const audioAbortControllerRef = useRef<AbortController | null>(null);
 
     // OCR State
     const { status: ocrEngineStatus, error: ocrEngineError, recognize, initializeOcr } = usePaddleOcr();
@@ -426,6 +429,10 @@ const App: React.FC = () => {
                 setIsAsrInitializing(false);
                 checkAllAsrCacheStatus();
                 break;
+            case 'unloaded':
+                setIsAsrInitialized(false);
+                showNotification(t('notifications.asrModelUnloaded'), 'info');
+                break;
             case 'transcription':
                 setInputText(payload);
                 if (isReverseTranslate.current) {
@@ -443,12 +450,10 @@ const App: React.FC = () => {
             default:
                 break;
         }
-    }, [showNotification, checkAllAsrCacheStatus]);
+    }, [showNotification, checkAllAsrCacheStatus, t]);
 
     const initializeWorker = useCallback(() => {
-        // The underlying race condition that caused worker re-initialization has been fixed.
-        // This code is now safe to run and is required for offline ASR to function.
-        /*if (worker.current) {
+        if (worker.current) {
             worker.current.terminate();
         }
         const newWorker = new Worker(new URL('./services/worker.ts', import.meta.url), {
@@ -456,12 +461,10 @@ const App: React.FC = () => {
         });
         newWorker.addEventListener('message', onWorkerMessage);
         worker.current = newWorker;
-        console.log('ASR Worker initialized.');*/
+        console.log('ASR Worker initialized.');
     }, [onWorkerMessage]);
 
     useEffect(() => {
-        initializeWorker();
-
         const handleOnline = () => setIsOnline(true);
         const handleOffline = () => setIsOnline(false);
         window.addEventListener('online', handleOnline);
@@ -481,7 +484,7 @@ const App: React.FC = () => {
             window.removeEventListener('online', handleOnline);
             window.removeEventListener('offline', handleOffline);
         };
-    }, [initializeWorker, checkAllAsrCacheStatus, showNotification, t]);
+    }, [checkAllAsrCacheStatus, showNotification, t]);
 
     useEffect(() => {
         let throttleTimeout: number | null = null;
@@ -531,6 +534,9 @@ const App: React.FC = () => {
         
         const savedAsrEnabled = localStorage.getItem('is-offline-asr-enabled');
         if (savedAsrEnabled) setIsOfflineAsrEnabled(JSON.parse(savedAsrEnabled));
+
+        const savedWebSpeechEnabled = localStorage.getItem('is-web-speech-api-enabled');
+        if (savedWebSpeechEnabled) setIsWebSpeechApiEnabled(JSON.parse(savedWebSpeechEnabled));
 
         const savedAsrModel = localStorage.getItem('asr-model-id');
         if (savedAsrModel) setAsrModelId(savedAsrModel);
@@ -589,27 +595,48 @@ const App: React.FC = () => {
         loadVoices();
     }, []);
 
-    // Fixed auto-load effect for ASR
+    // This effect now manages the entire lifecycle of the ASR worker.
     useEffect(() => {
-        const autoLoadAsr = async () => {
-            if (isOfflineAsrEnabled && asrModelId && !isAsrInitialized && !isAsrInitializing && worker.current) {
-                const isCached = await checkAsrModelCacheStatus(asrModelId);
-                if (isCached) {
-                    const model = ASR_MODELS.find(m => m.id === asrModelId);
-                    if (model) {
-                        console.log(`Auto-loading cached ASR model: ${model.id}`);
-                        setIsAsrInitializing(true);
-                        setAsrLoadingProgress({ file: '', progress: 0 });
-                        worker.current.postMessage({
-                            type: 'load',
-                            payload: { modelId: model.id, quantization: model.quantization }
-                        });
+        if (isOfflineAsrEnabled) {
+            // If ASR is enabled, ensure a worker exists.
+            if (!worker.current) {
+                initializeWorker();
+            }
+
+            // Proceed to load the model into the worker.
+            const loadModel = async () => {
+                if (worker.current && asrModelId && !isAsrInitialized && !isAsrInitializing) {
+                    const isCached = await checkAsrModelCacheStatus(asrModelId);
+                    if (isCached) {
+                        const model = ASR_MODELS.find(m => m.id === asrModelId);
+                        if (model) {
+                            console.log(`Auto-loading cached ASR model: ${model.id}`);
+                            setIsAsrInitializing(true);
+                            setAsrLoadingProgress({ file: '', progress: 0 });
+                            worker.current.postMessage({
+                                type: 'load',
+                                payload: { modelId: model.id, quantization: model.quantization }
+                            });
+                        }
                     }
                 }
+            };
+            loadModel();
+
+        } else {
+            // If ASR is disabled, terminate the worker to release all associated memory.
+            if (worker.current) {
+                console.log('Disabling offline ASR. Terminating worker to release memory.');
+                worker.current.terminate();
+                worker.current = null;
+                // Manually update state since the worker is gone and cannot send a confirmation message.
+                setIsAsrInitialized(false);
+                setIsAsrInitializing(false);
+                setAsrLoadingProgress({ file: '', progress: 0 });
+                showNotification(t('notifications.asrModelUnloaded'), 'info');
             }
-        };
-        autoLoadAsr();
-    }, [isOfflineAsrEnabled, asrModelId, isAsrInitialized, isAsrInitializing, !!worker.current]);
+        }
+    }, [isOfflineAsrEnabled, asrModelId, isAsrInitialized, isAsrInitializing, initializeWorker, checkAllAsrCacheStatus, showNotification, t]);
 
     useEffect(() => {
         const desiredModel = isOfflineModeEnabled ? offlineModelName : null;
@@ -662,6 +689,10 @@ const App: React.FC = () => {
     const handleCancelTranslation = useCallback(() => {
         if (translationAbortControllerRef.current) {
             translationAbortControllerRef.current.abort();
+        }
+        if (audioAbortControllerRef.current) {
+            audioAbortControllerRef.current.abort();
+            audioAbortControllerRef.current = null;
         }
     }, []);
 
@@ -729,6 +760,10 @@ const App: React.FC = () => {
     const handleStopRecording = () => {
         if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
             mediaRecorderRef.current.stop();
+        }
+        if (audioAbortControllerRef.current) {
+            audioAbortControllerRef.current.abort();
+            audioAbortControllerRef.current = null;
         }
     };
 
@@ -836,39 +871,31 @@ const App: React.FC = () => {
     }, [isRecording, isAstRecording]);
 
     const handleToggleRecording = useCallback(() => {
-        if (isRecording || (webSpeech.isListening && !isReverseTranslate.current)) {
-            if (isOfflineAsrEnabled) {
+        const isCurrentlyRecording = isRecording || (!isOfflineAsrEnabled && isWebSpeechApiEnabled && webSpeech.isListening && !isReverseTranslate.current);
+        if (isCurrentlyRecording) {
+            if (isOfflineAsrEnabled || !isWebSpeechApiEnabled) {
                 handleStopRecording();
             } else {
                 webSpeech.stopRecognition();
             }
         } else {
             if (isAstRecording) handleStopRecording();
-            
-            if (sourceLang.code === 'auto') {
-                showNotification(t('notifications.selectLanguageError'), 'info');
-                return;
+            if (sourceLang.code === 'auto' && (isOfflineAsrEnabled || !isWebSpeechApiEnabled)) {
+                 showNotification(t('notifications.selectLanguageError'), 'info');
+                 return;
             }
-            setIsRecording(true);
-            setTranslatedText('');
-            setInputText(isOfflineAsrEnabled ? t('translationInput.placeholderListening') : '');
             
+            setTranslatedText('');
+            setIsRecording(true);
+            setInputText(t('translationInput.placeholderListening'));
+
             if (isOfflineAsrEnabled) {
                 handleStartRecording(async (audioBlob) => {
                     setInputText(t('notifications.transcribing'));
                     try {
-                        const audioData = await processAudioForTranscription(audioBlob, {
-                            noiseSuppression: isNoiseCancellationEnabled,
-                            gain: audioGainValue,
-                        });
-                        if (worker.current) {
-                            worker.current.postMessage({
-                                type: 'transcribe',
-                                payload: { audio: audioData, language: sourceLang.code }
-                            });
-                        } else {
-                            throw new Error('ASR Worker is not initialized.');
-                        }
+                        const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: isNoiseCancellationEnabled, gain: audioGainValue });
+                        if (worker.current) worker.current.postMessage({ type: 'transcribe', payload: { audio: audioData, language: sourceLang.code } });
+                        else throw new Error('ASR Worker is not initialized.');
                     } catch (err) {
                         console.error(err);
                         setInputText('');
@@ -876,49 +903,65 @@ const App: React.FC = () => {
                         showNotification(message, 'error');
                     }
                 });
-            } else { 
+            } else if (isWebSpeechApiEnabled) { 
                 webSpeech.startRecognition(sourceLang.code);
+            } else { // Online Multimodal ASR
+                handleStartRecording(async (audioBlob) => {
+                    setInputText(t('notifications.transcribingApi'));
+                    const controller = new AbortController();
+                    audioAbortControllerRef.current = controller;
+                    try {
+                        let transcribedText = '';
+                        if (onlineProvider === 'openai') {
+                            const langCode = sourceLang.code.split('-')[0];
+                            transcribedText = await transcribeAudioOpenAI(audioBlob, langCode, apiKey, openaiApiUrl, controller.signal);
+                        } else {
+                            const langName = t(sourceLang.name, { lng: 'en' });
+                            transcribedText = await transcribeAudioGemini(audioBlob, langName, apiKey, modelName, controller.signal);
+                        }
+                        setInputText(transcribedText);
+                    } catch (err) {
+                        if (err instanceof DOMException && err.name === 'AbortError') return;
+                        const message = err instanceof Error ? err.message : 'Transcription failed.';
+                        showNotification(message, 'error');
+                        setInputText('');
+                    } finally {
+                        audioAbortControllerRef.current = null;
+                    }
+                });
             }
         }
-    }, [isRecording, isAstRecording, showNotification, t, sourceLang, isOfflineAsrEnabled, webSpeech, isNoiseCancellationEnabled, audioGainValue]);
+    }, [isRecording, isAstRecording, showNotification, t, sourceLang, isOfflineAsrEnabled, webSpeech, isNoiseCancellationEnabled, audioGainValue, isWebSpeechApiEnabled, onlineProvider, apiKey, openaiApiUrl, modelName]);
 
     const handleToggleAstRecording = useCallback(() => {
-        if (isAstRecording || (webSpeech.isListening && isReverseTranslate.current)) {
-             if (isOfflineAsrEnabled) {
+        const isCurrentlyAstRecording = isAstRecording || (!isOfflineAsrEnabled && isWebSpeechApiEnabled && webSpeech.isListening && isReverseTranslate.current);
+
+        if (isCurrentlyAstRecording) {
+             if (isOfflineAsrEnabled || !isWebSpeechApiEnabled) {
                 handleStopRecording();
             } else {
                 webSpeech.stopRecognition();
             }
         } else {
             if (isRecording) handleStopRecording();
-            
             if (targetLang.code === 'auto') {
                 showNotification(t('notifications.astSelectLanguage'), 'info');
                 return;
             }
-
+            
             setInputText('');
             setTranslatedText('');
             setIsAstRecording(true);
             isReverseTranslate.current = true;
-
+            
             if (isOfflineAsrEnabled) {
                 setInputText(t('translationInput.placeholderListening'));
                 handleStartRecording(async (audioBlob) => {
                     setInputText(t('notifications.transcribing'));
                     try {
-                        const audioData = await processAudioForTranscription(audioBlob, {
-                            noiseSuppression: isNoiseCancellationEnabled,
-                            gain: audioGainValue,
-                        });
-                        if (worker.current) {
-                            worker.current.postMessage({
-                                type: 'transcribe',
-                                payload: { audio: audioData, language: targetLang.code }
-                            });
-                        } else {
-                            throw new Error('ASR Worker is not initialized.');
-                        }
+                        const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: isNoiseCancellationEnabled, gain: audioGainValue });
+                        if (worker.current) worker.current.postMessage({ type: 'transcribe', payload: { audio: audioData, language: targetLang.code } });
+                        else throw new Error('ASR Worker is not initialized.');
                     } catch (err) {
                         console.error(err);
                         setInputText('');
@@ -927,11 +970,38 @@ const App: React.FC = () => {
                         showNotification(message, 'error');
                     }
                 });
-            } else { 
+            } else if (isWebSpeechApiEnabled) { 
                 webSpeech.startRecognition(targetLang.code);
+            } else { // Online Multimodal ASR for reverse translation
+                setInputText(t('translationInput.placeholderListening'));
+                handleStartRecording(async (audioBlob) => {
+                    setInputText(t('notifications.transcribingApi'));
+                    const controller = new AbortController();
+                    audioAbortControllerRef.current = controller;
+                    try {
+                        let transcribedText = '';
+                        if (onlineProvider === 'openai') {
+                            const langCode = targetLang.code.split('-')[0];
+                            transcribedText = await transcribeAudioOpenAI(audioBlob, langCode, apiKey, openaiApiUrl, controller.signal);
+                        } else {
+                            const langName = t(targetLang.name, { lng: 'en' });
+                            transcribedText = await transcribeAudioGemini(audioBlob, langName, apiKey, modelName, controller.signal);
+                        }
+                        setInputText(transcribedText);
+                        // The transcription result will trigger the reverse translate via the worker message handler
+                    } catch (err) {
+                        if (err instanceof DOMException && err.name === 'AbortError') return;
+                        const message = err instanceof Error ? err.message : 'Transcription failed.';
+                        showNotification(message, 'error');
+                        setInputText('');
+                        isReverseTranslate.current = false;
+                    } finally {
+                        audioAbortControllerRef.current = null;
+                    }
+                });
             }
         }
-    }, [isAstRecording, isRecording, targetLang, showNotification, t, isOfflineAsrEnabled, webSpeech, isNoiseCancellationEnabled, audioGainValue]);
+    }, [isAstRecording, isRecording, targetLang, showNotification, t, isOfflineAsrEnabled, webSpeech, isNoiseCancellationEnabled, audioGainValue, isWebSpeechApiEnabled, onlineProvider, apiKey, openaiApiUrl, modelName]);
 
     const handleImageCaptured = useCallback(async (imageDataUrl: string) => {
         setIsCameraOpen(false);
@@ -1007,6 +1077,7 @@ const App: React.FC = () => {
         newAsrModelId: string,
         isOfflineEnabled: boolean,
         newIsOfflineAsrEnabled: boolean,
+        newIsWebSpeechApiEnabled: boolean,
         newOnlineProvider: string,
         newOpenaiApiUrl: string,
         newIsTtsEnabled: boolean,
@@ -1030,6 +1101,7 @@ const App: React.FC = () => {
         setAsrModelId(newAsrModelId);
         setIsOfflineModeEnabled(isOfflineEnabled);
         setIsOfflineAsrEnabled(newIsOfflineAsrEnabled);
+        setIsWebSpeechApiEnabled(newIsWebSpeechApiEnabled);
         setIsTwoStepJpCn(newIsTwoStepJpCn);
         setIsOfflineTtsEnabled(newIsTtsEnabled);
         setOfflineTtsVoiceURI(newTtsVoiceURI);
@@ -1051,6 +1123,7 @@ const App: React.FC = () => {
         localStorage.setItem('asr-model-id', newAsrModelId);
         localStorage.setItem('offline-mode-enabled', JSON.stringify(isOfflineEnabled));
         localStorage.setItem('is-offline-asr-enabled', JSON.stringify(newIsOfflineAsrEnabled));
+        localStorage.setItem('is-web-speech-api-enabled', JSON.stringify(newIsWebSpeechApiEnabled));
         localStorage.setItem('is-two-step-jp-cn-enabled', JSON.stringify(newIsTwoStepJpCn));
         localStorage.setItem('tts-enabled', JSON.stringify(newIsTtsEnabled));
         localStorage.setItem('tts-voice-uri', newTtsVoiceURI);
@@ -1220,16 +1293,21 @@ const App: React.FC = () => {
 
     const handleClearAsrCache = useCallback(async () => {
         try {
+            if (worker.current) {
+                // Terminate worker before clearing cache to release file locks
+                worker.current.terminate();
+                worker.current = null;
+            }
             setIsAsrInitialized(false);
             await clearAsrCache();
             await checkAllAsrCacheStatus();
             showNotification(t('notifications.asrModelDeleted'), 'success');
-            initializeWorker();
+            // A new worker will be created automatically by the useEffect hook if ASR is enabled
         } catch (err) {
             const message = err instanceof Error ? err.message : 'Unknown error';
             showNotification(message, 'error');
         }
-    }, [checkAllAsrCacheStatus, showNotification, t, initializeWorker]);
+    }, [checkAllAsrCacheStatus, showNotification, t]);
 
 
     return (
@@ -1254,7 +1332,7 @@ const App: React.FC = () => {
                         speakingGender={speakingGender}
                         onlineProvider={onlineProvider}
                         isOfflineTtsEnabled={isOfflineTtsEnabled}
-                        isAstRecording={isAstRecording || (webSpeech.isListening && isReverseTranslate.current)}
+                        isAstRecording={isAstRecording || (isWebSpeechApiEnabled && webSpeech.isListening && isReverseTranslate.current)}
                         onToggleAstRecording={handleToggleAstRecording}
                         isOfflineAsrEnabled={isOfflineAsrEnabled}
                         isAsrInitialized={isAsrInitialized}
@@ -1283,7 +1361,7 @@ const App: React.FC = () => {
                         isOfflineAsrEnabled={isOfflineAsrEnabled}
                         isAsrInitialized={isAsrInitialized}
                         asrModelId={asrModelId}
-                        isListening={webSpeech.isListening && !isReverseTranslate.current}
+                        isListening={isWebSpeechApiEnabled && webSpeech.isListening && !isReverseTranslate.current}
                         recordingCountdown={recordingCountdown}
                     />
                 </div>
@@ -1313,6 +1391,7 @@ const App: React.FC = () => {
                 currentOfflineModelName={offlineModelName}
                 currentIsOfflineModeEnabled={isOfflineModeEnabled}
                 currentIsOfflineAsrEnabled={isOfflineAsrEnabled}
+                currentIsWebSpeechApiEnabled={isWebSpeechApiEnabled}
                 currentAsrModelId={asrModelId}
                 currentIsTwoStepJpCnEnabled={isTwoStepJpCn}
                 modelLoadingProgress={modelLoadingProgress}

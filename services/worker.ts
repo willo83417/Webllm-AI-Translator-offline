@@ -9,12 +9,12 @@ env.cacheDir = 'transformers-cache';
 
 // --- Worker State & Communication ---
 interface WorkerMessage {
-    type: 'load' | 'transcribe';
+    type: 'load' | 'transcribe' | 'unload';
     payload?: any;
 }
 
 interface AppMessage {
-    type: 'log' | 'transcription' | 'loaded' | 'error' | 'progress';
+    type: 'log' | 'transcription' | 'loaded' | 'error' | 'progress' | 'unloaded';
     payload: any;
 }
 
@@ -50,8 +50,10 @@ class Transcriber {
         post({ type: 'log', payload: `Initializing pipeline for model: ${modelId} with quantization: ${JSON.stringify(quantization)}` });
 
         try {
-            // Unload previous transcriber if it exists to free memory
+            // Dispose previous transcriber if it exists to free memory
             if (this.transcriber) {
+                post({ type: 'log', payload: `Disposing previous model: ${this.currentModelId}`});
+                await this.transcriber.dispose();
                 this.transcriber = null;
             }
 
@@ -90,7 +92,7 @@ class Transcriber {
             const generationOptions: any = {
                 language: language.startsWith('zh') ? 'chinese' : (language === 'auto' ? undefined : language),
                 task: 'transcribe',
-                temperature: 0,
+                temperature: 0.3,
             };
     
             const promptText = PROMPT_MAP[language];
@@ -113,6 +115,28 @@ class Transcriber {
             post({ type: 'error', payload: `Transcription error: ${errorMessage}` });
         }
     }
+
+    async unload() {
+        if (!this.transcriber) {
+            post({ type: 'log', payload: 'No ASR model is currently loaded. Nothing to unload.' });
+            return;
+        }
+
+        post({ type: 'log', payload: `Unloading model: ${this.currentModelId}` });
+        try {
+            // Explicitly call dispose() to free up memory (including WebGPU/WebGL resources).
+            await this.transcriber.dispose();
+            this.transcriber = null;
+            this.currentModelId = null;
+            post({ type: 'unloaded', payload: true });
+            post({ type: 'log', payload: 'ASR pipeline instance disposed and released.' });
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.error('ASR Unload Error:', error);
+            post({ type: 'error', payload: `Error unloading ASR model: ${errorMessage}` });
+        }
+    }
 }
 
 const transcriber = new Transcriber();
@@ -133,6 +157,9 @@ self.onmessage = (event: MessageEvent<WorkerMessage>) => {
             } else {
                 post({ type: 'error', payload: 'Invalid transcribe payload: audio data is required.' });
             }
+            break;
+        case 'unload':
+            transcriber.unload();
             break;
         default:
             console.warn(`ASR Worker received unknown message type: ${type}`);

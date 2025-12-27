@@ -1,3 +1,5 @@
+
+
 import { GoogleGenAI, Type } from "@google/genai";
 
 export const translateTextStream = async (
@@ -129,5 +131,62 @@ export const translateImage = async (
             throw new Error('Failed to parse the response from the Gemini API. The response was not valid JSON.');
         }
         throw new Error('Gemini API request for image translation failed.');
+    }
+};
+
+const toBase64 = (blob: Blob): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(blob);
+    reader.onload = () => resolve((reader.result as string).split(',')[1]);
+    reader.onerror = error => reject(error);
+});
+
+export const transcribeAudioGemini = async (
+    audioBlob: Blob,
+    language: string,
+    apiKey: string,
+    modelName: string,
+    signal: AbortSignal
+): Promise<string> => {
+    if (!apiKey) throw new Error('API Key is not set.');
+    if (!modelName) throw new Error('Model Name is not configured.');
+
+    try {
+        const ai = new GoogleGenAI({ apiKey });
+        const base64Audio = await toBase64(audioBlob);
+
+        const audioPart = {
+            inlineData: {
+                mimeType: audioBlob.type,
+                data: base64Audio,
+            },
+        };
+        const langInstruction = language === 'Auto Detect' 
+            ? 'auto-detect the language and transcribe the speech' 
+            : `transcribe the speech in ${language}`;
+            
+        const textPart = {
+            text: `Please ${langInstruction}. Return ONLY the transcribed text, with no extra formatting, commentary, or any other text.`,
+        };
+
+        // Note: AbortSignal is not directly supported in the generateContent method of the SDK yet.
+        // The request will run to completion on the server side even if the user navigates away.
+        const response = await ai.models.generateContent({
+             model: modelName,
+             contents: { parts: [textPart, audioPart] },
+        });
+        
+        if (signal.aborted) {
+            throw new DOMException('Request aborted by user', 'AbortError');
+        }
+
+        return response.text.trim();
+
+    } catch (error) {
+        console.error('Error transcribing audio with Gemini:', error);
+        if (error instanceof DOMException && error.name === 'AbortError') {
+            throw error;
+        }
+        throw new Error('Gemini API audio transcription request failed.');
     }
 };
