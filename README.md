@@ -1,7 +1,7 @@
 <div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+<img width="1200" height="300" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
 </div>
-
+English | [中文](./README_zh.md) |
 # WebLLM AI Translator
 
 A modern, high-performance, privacy-focused translation application that runs entirely in your browser. This project leverages cutting-edge web technologies like WebAssembly, WebGPU, and Progressive Web Apps (PWA) to deliver a seamless experience with both online and offline capabilities.
