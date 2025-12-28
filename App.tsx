@@ -1010,16 +1010,15 @@ const App: React.FC = () => {
         setTranslatedText('');
 
         try {
-            if (isOfflineModeEnabled) {
-                if (ocrEngineStatus !== 'ready') {
-                    throw new Error(t('notifications.ocrNotReady'));
-                }
+            // Priority 1: Use local OCR if it's initialized and ready.
+            if (ocrEngineStatus === 'ready') {
                 const image = new Image();
                 image.src = imageDataUrl;
-                await new Promise((resolve, reject) => {
-                    image.onload = resolve;
-                    image.onerror = reject;
+                await new Promise<void>((resolve, reject) => {
+                    image.onload = () => resolve();
+                    image.onerror = (e) => reject(e);
                 });
+
                 const recognitionData = await recognize(image);
                 if (!recognitionData) {
                     throw new Error('OCR recognition returned no data.');
@@ -1028,18 +1027,29 @@ const App: React.FC = () => {
                 setInputText(extractedText);
 
                 if (extractedText.trim()) {
+                    // performTranslate will handle loading state internally.
                     await performTranslate(extractedText);
                 } else {
+                    // No text found, so stop loading and clear output.
                     setTranslatedText('');
                     setIsLoading(false);
                 }
-                return;
+                return; // Local OCR path is complete.
             }
 
-            if (!isOnline) throw new Error(t('notifications.offlineImageTranslateError'));
+            // Fallback Logic: Local OCR is not ready.
+
+            // If in offline mode, local OCR is mandatory.
+            if (isOfflineModeEnabled) {
+                throw new Error(t('notifications.ocrNotReady'));
+            }
+            
+            // If in online mode, use the online provider's integrated OCR.
+            if (!isOnline) {
+                throw new Error(t('notifications.offlineImageTranslateError'));
+            }
             
             let result: { sourceText: string, translatedText: string };
-
             if (onlineProvider === 'openai') {
                 if (!apiKey) throw new Error("OpenAI API Key is not set. Please add it in the settings.");
                 if (!openaiApiUrl) throw new Error("OpenAI API URL is not set. Please add it in the settings.");
@@ -1060,13 +1070,15 @@ const App: React.FC = () => {
                 localStorage.setItem('translation-history', JSON.stringify(updatedHistory));
                 return updatedHistory;
             });
+
+            setIsLoading(false);
+
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
             showNotification(t('notifications.imageProcessingFailed', { errorMessage }), 'error');
             setInputText('');
+            setTranslatedText('');
             setIsLoading(false);
-        } finally {
-            // setIsLoading is handled inside the logic now
         }
     }, [isOfflineModeEnabled, isOnline, apiKey, modelName, targetLang, sourceLang, showNotification, onlineProvider, openaiApiUrl, t, ocrEngineStatus, recognize, performTranslate]);
 

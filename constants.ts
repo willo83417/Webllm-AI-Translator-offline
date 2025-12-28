@@ -41,6 +41,13 @@ export const OFFLINE_MODELS: OfflineModel[] = [
         modelLibUrl: 'https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_80/Llama-3.2-3B-Instruct-q4f16_1-ctx4k_cs1k-webgpu.wasm'
     },
     {
+        name: 'Llama-Breeze2-8B-abliteration (4.53 GB)',
+        value: 'Llama-Breeze2-8B-Instruct-text-only-abliteration-q4f16_1-MLC',
+        isCustom: true,
+        modelUrl: 'https://huggingface.co/willopcbeta/Llama-Breeze2-8B-Instruct-text-only-abliteration-q4f16_1-MLC',
+        modelLibUrl: 'https://raw.githubusercontent.com/mlc-ai/binary-mlc-llm-libs/main/web-llm-models/v0_2_80/Llama-3_1-8B-Instruct-q4f16_1-ctx4k_cs1k-webgpu.wasm'
+    },
+    {
         name: 'EZO-gemma-2-2b-jpn-it (1.51 GB)',
         value: 'EZO-gemma-2-2b-jpn-it-q4f32_1-MLC',
         isCustom: true,
