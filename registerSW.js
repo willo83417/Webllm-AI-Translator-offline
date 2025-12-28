@@ -1,0 +1,1 @@
+if('serviceWorker' in navigator) {window.addEventListener('load', () => {navigator.serviceWorker.register('/Webllm-AI-Translator-offline/sw.js', { scope: '/Webllm-AI-Translator-offline/' })})}
