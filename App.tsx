@@ -1,5 +1,4 @@
 
-
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import TranslationInput from './components/TranslationInput';
@@ -894,8 +893,18 @@ const App: React.FC = () => {
                     setInputText(t('notifications.transcribing'));
                     try {
                         const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: isNoiseCancellationEnabled, gain: audioGainValue });
-                        if (worker.current) worker.current.postMessage({ type: 'transcribe', payload: { audio: audioData, language: sourceLang.code } });
-                        else throw new Error('ASR Worker is not initialized.');
+                        if (worker.current) {
+                            worker.current.postMessage({ 
+                                type: 'transcribe', 
+                                payload: { 
+                                    audio: audioData, 
+                                    asrLanguage: sourceLang.asrCode,
+                                    promptLanguage: sourceLang.code 
+                                } 
+                            });
+                        } else {
+                            throw new Error('ASR Worker is not initialized.');
+                        }
                     } catch (err) {
                         console.error(err);
                         setInputText('');
@@ -960,8 +969,18 @@ const App: React.FC = () => {
                     setInputText(t('notifications.transcribing'));
                     try {
                         const audioData = await processAudioForTranscription(audioBlob, { noiseSuppression: isNoiseCancellationEnabled, gain: audioGainValue });
-                        if (worker.current) worker.current.postMessage({ type: 'transcribe', payload: { audio: audioData, language: targetLang.code } });
-                        else throw new Error('ASR Worker is not initialized.');
+                        if (worker.current) {
+                            worker.current.postMessage({ 
+                                type: 'transcribe', 
+                                payload: { 
+                                    audio: audioData, 
+                                    asrLanguage: targetLang.asrCode,
+                                    promptLanguage: targetLang.code 
+                                } 
+                            });
+                        } else {
+                            throw new Error('ASR Worker is not initialized.');
+                        }
                     } catch (err) {
                         console.error(err);
                         setInputText('');

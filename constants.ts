@@ -3,16 +3,16 @@ import type { Language, AsrModel, OfflineModel } from './types';
 
 export const LANGUAGES: Language[] = [
     { code: 'auto', name: 'languages.autoDetect' },
-    { code: 'en', name: 'languages.english', asrCode: 'en' },
-    { code: 'zh-Hant', name: 'languages.chineseTraditional', asrCode: 'zh' },
-    { code: 'zh-Hant-HK', name: 'languages.chineseTraditionalHK', asrCode: 'zh' },
-    { code: 'zh-Hans', name: 'languages.chineseSimplified', asrCode: 'zh' },
-    { code: 'es', name: 'languages.spanish', asrCode: 'es' },
-    { code: 'ja', name: 'languages.japanese', asrCode: 'ja' },
-    { code: 'fr', name: 'languages.french', asrCode: 'fr' },
-    { code: 'de', name: 'languages.german', asrCode: 'de' },
-    { code: 'ko', name: 'languages.korean', asrCode: 'ko' },
-    { code: 'ru', name: 'languages.russian', asrCode: 'ru' },
+    { code: 'en-US', name: 'languages.english', asrCode: 'en' },
+    { code: 'zh-TW', name: 'languages.chineseTraditional', asrCode: 'zh' },
+    { code: 'zh-HK', name: 'languages.chineseTraditionalHK', asrCode: 'zh' },
+    { code: 'zh-CN', name: 'languages.chineseSimplified', asrCode: 'zh' },
+    { code: 'es-ES', name: 'languages.spanish', asrCode: 'es' },
+    { code: 'ja-JP', name: 'languages.japanese', asrCode: 'ja' },
+    { code: 'fr-FR', name: 'languages.french', asrCode: 'fr' },
+    { code: 'de-DE', name: 'languages.german', asrCode: 'de' },
+    { code: 'ko-KR', name: 'languages.korean', asrCode: 'ko' },
+    { code: 'ru-RU', name: 'languages.russian', asrCode: 'ru' },
 ];
 
 export const OFFLINE_MODELS: OfflineModel[] = [
@@ -68,7 +68,7 @@ export const ASR_MODELS: AsrModel[] = [
     },
 	{
         id: 'Xenova/whisper-small',
-        name: 'Whisper small (q4f16)',
+        name: 'Whisper small (q4)',
         quantization: {
             encoder_model: 'q4',
             decoder_model_merged: 'q4',

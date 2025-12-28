@@ -1,5 +1,4 @@
 
-
 import { pipeline, env } from '@huggingface/transformers';
 
 // --- Environment Configuration ---
@@ -20,10 +19,11 @@ interface AppMessage {
 
 const post = (message: AppMessage) => self.postMessage(message);
 
+// Maps specific language codes to prompts that guide the Whisper model's output format.
 const PROMPT_MAP: Record<string, string> = {
-    'zh-Hant': '請使用繁體中文輸出。',
-    'zh-Hant-HK': '請使用香港繁體中文輸出。',
-    'zh-Hans': '请使用简体中文输出。'
+    'zh-TW': '請使用繁體中文輸出。',
+    'zh-HK': '請使用香港繁體中文輸出。',
+    'zh-CN': '请使用简体中文输出。'
 };
 
 class Transcriber {
@@ -78,7 +78,7 @@ class Transcriber {
         }
     }
 
-    async transcribe(audioData: Float32Array, language: string) {
+    async transcribe(audioData: Float32Array, asrLanguage: string, promptLanguage: string) {
         if (!this.transcriber) {
             const errorMsg = `Transcriber not ready. The pipeline was not initialized correctly. Current model ID: ${this.currentModelId}`;
             console.error(errorMsg);
@@ -86,21 +86,23 @@ class Transcriber {
             return;
         }
 
-        post({ type: 'log', payload: `Starting transcription (Lang: ${language})...` });
+        post({ type: 'log', payload: `Starting transcription (ASR Lang: ${asrLanguage}, Prompt Lang: ${promptLanguage})...` });
 
         try {
             const generationOptions: any = {
-                language: language.startsWith('zh') ? 'chinese' : (language === 'auto' ? undefined : language),
+                language: asrLanguage?.startsWith('zh') ? 'chinese' : (asrLanguage === 'auto' ? undefined : asrLanguage),
                 task: 'transcribe',
                 temperature: 0.3,
             };
     
-            const promptText = PROMPT_MAP[language];
+            // Use the specific promptLanguage code to look up the correct prompt.
+            const promptText = PROMPT_MAP[promptLanguage];
             if (promptText) {
-                post({ type: 'log', payload: `Applying prompt for ${language}: "${promptText}"` });
+                post({ type: 'log', payload: `Applying prompt for ${promptLanguage}: "${promptText}"` });
     
                 const { input_ids } = await this.transcriber.tokenizer(promptText);
                 
+                // Remove the final token which is typically an EOS token.
                 generationOptions.prompt_ids = input_ids.data.slice(0, -1);
             }
             
@@ -152,10 +154,11 @@ self.onmessage = (event: MessageEvent<WorkerMessage>) => {
             }
             break;
         case 'transcribe':
-            if (payload && payload.audio) {
-                transcriber.transcribe(payload.audio, payload.language);
+            const { audio, asrLanguage, promptLanguage } = payload;
+            if (audio && asrLanguage !== undefined && promptLanguage !== undefined) {
+                transcriber.transcribe(audio, asrLanguage, promptLanguage);
             } else {
-                post({ type: 'error', payload: 'Invalid transcribe payload: audio data is required.' });
+                post({ type: 'error', payload: 'Invalid transcribe payload: audio, asrLanguage, and promptLanguage are required.' });
             }
             break;
         case 'unload':
