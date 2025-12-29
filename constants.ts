@@ -73,7 +73,7 @@ export const ASR_MODELS: AsrModel[] = [
             encoder_model: 'q4',
             decoder_model_merged: 'q4',
         },
-        size: '~200 MB'
+        size: '~300 MB'
     },
     {
         id: 'Xenova/whisper-base',

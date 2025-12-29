@@ -1,5 +1,5 @@
 
-import { pipeline, env } from '@huggingface/transformers';
+import { pipeline, env, TextStreamer } from '@huggingface/transformers';
 
 // --- Environment Configuration ---
 env.backends.onnx.executionProviders = ['webgpu', 'wasm'];
@@ -13,7 +13,7 @@ interface WorkerMessage {
 }
 
 interface AppMessage {
-    type: 'log' | 'transcription' | 'loaded' | 'error' | 'progress' | 'unloaded';
+    type: 'log' | 'transcription' | 'transcription-partial' | 'loaded' | 'error' | 'progress' | 'unloaded';
     payload: any;
 }
 
@@ -89,10 +89,25 @@ class Transcriber {
         post({ type: 'log', payload: `Starting transcription (ASR Lang: ${asrLanguage}, Prompt Lang: ${promptLanguage})...` });
 
         try {
+            const tokenizer = this.transcriber.tokenizer;
+            let fullTranscription = "";
+
+            // Use TextStreamer to capture partial results.
+            // We accumulate the chunks locally because App.tsx replaces the input text entirely.
+            const streamer = new TextStreamer(tokenizer, {
+                skip_prompt: true,
+                skip_special_tokens: true,
+                callback_function: (text: string) => {
+                    fullTranscription += text;
+                    post({ type: 'transcription-partial', payload: fullTranscription });
+                }
+            });
+
             const generationOptions: any = {
                 language: asrLanguage?.startsWith('zh') ? 'chinese' : (asrLanguage === 'auto' ? undefined : asrLanguage),
                 task: 'transcribe',
                 temperature: 0.3,
+                streamer: streamer, // Pass the streamer to generate configuration
             };
     
             // Use the specific promptLanguage code to look up the correct prompt.
@@ -108,8 +123,9 @@ class Transcriber {
             
             const output = await this.transcriber(audioData, generationOptions);
             
-            const text = Array.isArray(output) ? output[0].text : output.text;
-            post({ type: 'transcription', payload: (text || '').trim() });
+            // Ensure we send the final authoritative result from the pipeline output
+            const finalText = (Array.isArray(output) ? output[0].text : output.text) || '';
+            post({ type: 'transcription', payload: finalText.trim() });
             post({ type: 'log', payload: 'Transcription completed successfully.' });
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);

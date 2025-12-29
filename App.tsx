@@ -1,4 +1,5 @@
 
+
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import TranslationInput from './components/TranslationInput';
@@ -25,7 +26,7 @@ import type { Language, TranslationHistoryItem, ModelLoadingProgress, AsrModel, 
 import { LANGUAGES, ASR_MODELS, OCR_MODELS } from './constants';
 
 interface AppMessage {
-    type: 'log' | 'transcription' | 'loaded' | 'error' | 'progress' | 'unloaded';
+    type: 'log' | 'transcription' | 'transcription-partial' | 'loaded' | 'error' | 'progress' | 'unloaded';
     payload: any;
 }
 
@@ -421,6 +422,7 @@ const App: React.FC = () => {
                 break;
             case 'error':
                 showNotification(payload, 'error');
+                setInputText(payload); // Show error in input box
                 setIsAsrInitializing(false);
                 break;
             case 'loaded':
@@ -431,6 +433,9 @@ const App: React.FC = () => {
             case 'unloaded':
                 setIsAsrInitialized(false);
                 showNotification(t('notifications.asrModelUnloaded'), 'info');
+                break;
+            case 'transcription-partial':
+                setInputText(payload);
                 break;
             case 'transcription':
                 setInputText(payload);
