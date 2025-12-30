@@ -3,16 +3,17 @@ import type { Language, AsrModel, OfflineModel } from './types';
 
 export const LANGUAGES: Language[] = [
     { code: 'auto', name: 'languages.autoDetect' },
-    { code: 'en-US', name: 'languages.english', asrCode: 'en' },
+    { code: 'en', name: 'languages.english', asrCode: 'en' },
     { code: 'zh-TW', name: 'languages.chineseTraditional', asrCode: 'zh' },
     { code: 'zh-HK', name: 'languages.chineseTraditionalHK', asrCode: 'zh' },
     { code: 'zh-CN', name: 'languages.chineseSimplified', asrCode: 'zh' },
-    { code: 'es-ES', name: 'languages.spanish', asrCode: 'es' },
-    { code: 'ja-JP', name: 'languages.japanese', asrCode: 'ja' },
-    { code: 'fr-FR', name: 'languages.french', asrCode: 'fr' },
-    { code: 'de-DE', name: 'languages.german', asrCode: 'de' },
-    { code: 'ko-KR', name: 'languages.korean', asrCode: 'ko' },
-    { code: 'ru-RU', name: 'languages.russian', asrCode: 'ru' },
+    { code: 'es', name: 'languages.spanish', asrCode: 'es' },
+    { code: 'ja', name: 'languages.japanese', asrCode: 'ja' },
+    { code: 'fr', name: 'languages.french', asrCode: 'fr' },
+    { code: 'de', name: 'languages.german', asrCode: 'de' },
+    { code: 'ko', name: 'languages.korean', asrCode: 'ko' },
+    { code: 'ru', name: 'languages.russian', asrCode: 'ru' },
+    { code: 'it', name: 'languages.italian', asrCode: 'it'  },
 ];
 
 export const OFFLINE_MODELS: OfflineModel[] = [
