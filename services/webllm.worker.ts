@@ -1,3 +1,4 @@
+
 import { CreateMLCEngine, AppConfig, deleteModelAllInfoInCache, MLCEngine, prebuiltAppConfig } from "@mlc-ai/web-llm";
 
 // --- WORKER STATE & CONFIG ---
@@ -7,7 +8,11 @@ let engine: MLCEngine | null = null;
 let currentModelId: string | null = null;
 let idleTimer: number | null = null;
 const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
-prebuiltAppConfig.useIndexedDBCache = true;
+
+// OPTIMIZATION: Switch to Cache API (false) instead of IndexedDB (true).
+// On Android, IndexedDB I/O for large binary blobs can be significantly slower than native Cache API.
+prebuiltAppConfig.useIndexedDBCache = false;
+
 // --- UTILITY FUNCTIONS ---
 
 const post = (message: { type: string, payload?: any }) => self.postMessage(message);
@@ -47,12 +52,14 @@ const initializeEngine = async (modelId: string, appConfig?: AppConfig) => {
         
         // Use CreateMLCEngine as it's the recommended factory function.
         // It handles both instantiation and loading.
+        console.time("EngineInitialization"); // Start timing
         engine = await CreateMLCEngine(modelId, {
             appConfig: appConfig, // if appConfig is undefined, it uses prebuilt models
             initProgressCallback: (progress) => {
                 post({ type: 'progress', payload: progress });
             }
         });
+        console.timeEnd("EngineInitialization"); // End timing
 
         currentModelId = modelId;
         post({ type: 'loaded', payload: `Model ${modelId} loaded successfully.` });
@@ -76,6 +83,7 @@ const generate = async (prompt: string, options: any) => {
         const stream = await engine.chat.completions.create({
             messages: [{ role: 'user', content: prompt }],
             stream: true,
+			//extra_body: {enable_thinking: false},
             temperature: options.temperature,
             max_tokens: options.maxTokens,
             presence_penalty: options.presencePenalty,
@@ -105,29 +113,63 @@ const generate = async (prompt: string, options: any) => {
     }
 };
 
+// Helper to delete from Cache API directly since we disabled IndexedDB
+const deleteFromCacheAPI = async (modelUrlPart: string) => {
+    try {
+        if ('caches' in self) {
+            const cacheKeys = await self.caches.keys();
+            for (const key of cacheKeys) {
+                // WebLLM typically uses specific cache names, but often puts things in 'webllm/...' 
+                // or relies on the browser's default cache.
+                // Since we can't easily identify which cache bucket WebLLM used exactly without IDB,
+                // we iterate open caches and check for matching URLs if possible, or just log.
+                // NOTE: Without useIndexedDBCache, WebLLM relies on the browser's standard HTTP cache.
+                // Programmatically clearing the browser's implicit HTTP cache for a specific URL 
+                // is restricted in JS. We can only clear named caches opened via `caches.open`.
+                // However, WebLLM *might* create a named cache "webllm/wasm" or similar.
+                
+                const cache = await self.caches.open(key);
+                const requests = await cache.keys();
+                for (const request of requests) {
+                    if (request.url.includes(modelUrlPart)) {
+                        await cache.delete(request);
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("Error attempting to clear Cache API:", e);
+    }
+}
+
 const deleteCache = async (modelId: string, customModel?: { modelUrl: string, modelLibUrl: string }) => {
     if (engine && currentModelId === modelId) {
         await unloadEngine();
     }
     
+    // Even though we use Cache API, we create the config to pass to the delete function
+    // in case WebLLM has internal cleanup logic.
     let appConfig: AppConfig | undefined = undefined;
     if (customModel) {
-        // For custom models, create a specific, minimal appConfig.
         appConfig = {
             model_list: [{
                 "model_id": modelId,
                 "model": customModel.modelUrl,
                 "model_lib": customModel.modelLibUrl,
             }],
-            useIndexedDBCache: true,
+            useIndexedDBCache: false,
         };
     } else {
-        // For pre-built models, explicitly use the prebuiltAppConfig.
-        appConfig = prebuiltAppConfig;
+        appConfig = { ...prebuiltAppConfig, useIndexedDBCache: false };
     }
 
     try {
         await deleteModelAllInfoInCache(modelId, appConfig);
+        
+        // Manually attempt to clean up Cache API as well, using the model ID/URL as a hint
+        const modelUrlHint = customModel ? customModel.modelUrl : modelId;
+        await deleteFromCacheAPI(modelUrlHint);
+
         post({ type: 'log', payload: `Cache for ${modelId} deleted.` });
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -140,13 +182,11 @@ const clearAllCache = async (customModels: { id: string, modelUrl: string, model
         await unloadEngine();
     }
     try {
-        // 1. Clear all pre-built models
         post({ type: 'log', payload: 'Clearing pre-built model caches...' });
         for (const model of prebuiltAppConfig.model_list) {
-            await deleteModelAllInfoInCache(model.model_id, prebuiltAppConfig);
+            await deleteModelAllInfoInCache(model.model_id, { ...prebuiltAppConfig, useIndexedDBCache: false });
         }
 
-        // 2. Clear all custom models
         post({ type: 'log', payload: 'Clearing custom model caches...' });
         for (const customModel of customModels) {
             const customAppConfig: AppConfig = {
@@ -155,10 +195,23 @@ const clearAllCache = async (customModels: { id: string, modelUrl: string, model
                     "model": customModel.modelUrl,
                     "model_lib": customModel.modelLibUrl,
                 }],
-                useIndexedDBCache: true,
+                useIndexedDBCache: false,
             };
             await deleteModelAllInfoInCache(customModel.id, customAppConfig);
         }
+        
+        // Aggressive Cache API cleanup
+        if ('caches' in self) {
+             const keys = await self.caches.keys();
+             for (const key of keys) {
+                 // Be careful not to delete PWA precache or other app data if possible.
+                 // WebLLM usually uses "webllm" prefix.
+                 if (key.includes('webllm') || key.includes('model')) {
+                     await self.caches.delete(key);
+                 }
+             }
+        }
+
         post({ type: 'log', payload: 'All model caches cleared.' });
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -183,9 +236,8 @@ self.onmessage = async (event: MessageEvent) => {
                 post({ type: 'loaded', payload: `Model ${payload.modelId} is already loaded.` });
                 return;
             }
-            // For prebuilt models, explicitly pass the prebuiltAppConfig to avoid potential
-            // state conflicts after a custom model has been loaded.
-            await initializeEngine(payload.modelId, prebuiltAppConfig);
+            // Use config with useIndexedDBCache: false
+            await initializeEngine(payload.modelId, { ...prebuiltAppConfig, useIndexedDBCache: false });
             break;
         case 'load-custom': {
             const { modelId, modelUrl, modelLibUrl } = payload;
@@ -194,17 +246,18 @@ self.onmessage = async (event: MessageEvent) => {
                 return;
             }
 
-            // For custom models, create a specific, minimal appConfig.
             const customAppConfig: AppConfig = {
                 model_list: [{
                     "model_id": modelId,
                     "model": modelUrl,
                     "model_lib": modelLibUrl,
+                    "low_resource_required": true,
+                    "required_features": ["shader-f16"],
                     "overrides": {
                         "context_window_size": 4096
                     }
                 }],
-                useIndexedDBCache: true,
+                useIndexedDBCache: false, // Force Cache API
             };
             await initializeEngine(modelId, customAppConfig);
             break;
