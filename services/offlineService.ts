@@ -25,6 +25,12 @@ const initializeWorker = () => {
     worker.onmessage = (event: MessageEvent) => {
         const { type, payload } = event.data;
         switch(type) {
+            case 'log':
+                console.log('[WebLLM Worker]', payload);
+                break;
+            case 'stats':
+                console.log('%c[WebLLM Stats]', 'color: blue; font-weight: bold;', payload);
+                break;
             case 'progress':
                 onProgressCallback?.(payload);
                 break;

@@ -3,19 +3,45 @@ import { CreateMLCEngine, AppConfig, deleteModelAllInfoInCache, MLCEngine, prebu
 
 // --- WORKER STATE & CONFIG ---
 
-// FIX: 'CreateMLCEngine' is a factory function, not a type. The engine instance type is 'MLCEngine'.
 let engine: MLCEngine | null = null;
 let currentModelId: string | null = null;
 let idleTimer: number | null = null;
 const IDLE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
 
-// OPTIMIZATION: Switch to Cache API (false) instead of IndexedDB (true).
-// On Android, IndexedDB I/O for large binary blobs can be significantly slower than native Cache API.
+// OPTIMIZATION: Use Cache API (false) for faster I/O on mobile compared to IndexedDB (true)
 prebuiltAppConfig.useIndexedDBCache = false;
 
 // --- UTILITY FUNCTIONS ---
 
 const post = (message: { type: string, payload?: any }) => self.postMessage(message);
+
+post({ type: 'log', payload: 'WebLLM worker started.' });
+
+// Check WebGPU support
+let hasF16Support = false;
+
+const checkGPUSupport = async () => {
+    if (!('gpu' in self.navigator)) {
+        post({ type: 'log', payload: 'WebGPU is not supported. Falling back to WebGL/WASM.' });
+        return;
+    }
+
+    try {
+        const adapter = await (navigator as any).gpu.requestAdapter();
+        if (adapter) {
+            hasF16Support = adapter.features.has('shader-f16');
+            const info = `GPU: ${adapter.info.vendor} ${adapter.info.architecture || ''}`;
+            post({ type: 'log', payload: `${info}. F16 Shader Support: ${hasF16Support ? 'YES (Enabled)' : 'NO (Using F32)'}` });
+        } else {
+            post({ type: 'log', payload: 'WebGPU Adapter not found.' });
+        }
+    } catch (e) {
+        console.warn("Error checking GPU features:", e);
+    }
+};
+
+// Perform check immediately on worker start
+checkGPUSupport();
 
 const unloadEngine = async () => {
     if (engine) {
@@ -45,21 +71,64 @@ const resetIdleTimer = () => {
 // --- CORE LOGIC ---
 
 const initializeEngine = async (modelId: string, appConfig?: AppConfig) => {
-    await unloadEngine(); // Always unload previous engine to ensure clean state
+    await unloadEngine();
 
     try {
         post({ type: 'log', payload: `Initializing engine for model: ${modelId}` });
         
-        // Use CreateMLCEngine as it's the recommended factory function.
-        // It handles both instantiation and loading.
-        console.time("EngineInitialization"); // Start timing
+        // Re-check GPU support to ensure we have the latest flag before config
+        if (!hasF16Support && 'gpu' in self.navigator) {
+             await checkGPUSupport();
+        }
+
+        const baseConfig = appConfig || prebuiltAppConfig;
+        
+        // DYNAMIC CONFIGURATION:
+        // 1. Force context_window_size to 2048 for VRAM savings.
+        // 2. Inject 'required_features': ["shader-f16"] if hardware supports it.
+        //    This forces WebLLM to request a device with F16 enabled.
+        const optimizedConfig: AppConfig = {
+            ...baseConfig,
+            useIndexedDBCache: false,
+            model_list: baseConfig.model_list.map(m => {
+                const isTargetModel = m.model_id === modelId;
+                
+                // Prepare requirements array
+                const requiredFeatures = m.required_features ? [...m.required_features] : [];
+                if (hasF16Support && !requiredFeatures.includes("shader-f16")) {
+                    requiredFeatures.push("shader-f16");
+                }
+
+                if (isTargetModel) {
+                    return {
+                        ...m,
+                        required_features: requiredFeatures,
+                        overrides: {
+                            ...m.overrides,
+                            context_window_size: 2048, 
+                        }
+                    };
+                }
+                
+                // Also update other models in the list just in case, consistent config is better
+                return {
+                    ...m,
+                    required_features: requiredFeatures
+                };
+            })
+        };
+
+        console.time("EngineInitialization");
+        
         engine = await CreateMLCEngine(modelId, {
-            appConfig: appConfig, // if appConfig is undefined, it uses prebuilt models
+            appConfig: optimizedConfig,
+            logLevel: "WARN",
             initProgressCallback: (progress) => {
                 post({ type: 'progress', payload: progress });
             }
         });
-        console.timeEnd("EngineInitialization"); // End timing
+        
+        console.timeEnd("EngineInitialization");
 
         currentModelId = modelId;
         post({ type: 'loaded', payload: `Model ${modelId} loaded successfully.` });
@@ -67,7 +136,7 @@ const initializeEngine = async (modelId: string, appConfig?: AppConfig) => {
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         post({ type: 'error', payload: `Failed to load model: ${message}` });
-        await unloadEngine(); // Clean up on failure
+        await unloadEngine();
     }
 };
 
@@ -80,10 +149,13 @@ const generate = async (prompt: string, options: any) => {
 
     try {
         let fullText = "";
+        const tStart = performance.now();
+        let tFirstToken = 0;
+        
         const stream = await engine.chat.completions.create({
             messages: [{ role: 'user', content: prompt }],
             stream: true,
-			//extra_body: {enable_thinking: false},
+            stream_options: { include_usage: true },
             temperature: options.temperature,
             max_tokens: options.maxTokens,
             presence_penalty: options.presencePenalty,
@@ -92,17 +164,38 @@ const generate = async (prompt: string, options: any) => {
 
         for await (const chunk of stream) {
             const content = chunk.choices[0]?.delta.content;
+            
+            if (!tFirstToken && content) {
+                tFirstToken = performance.now();
+            }
+
             if (content) {
                 fullText += content;
                 post({ type: 'chunk', payload: content });
             }
+            
+            if (chunk.usage) {
+                const tEnd = performance.now();
+                const usage = chunk.usage;
+                
+                const prefillTimeSec = (tFirstToken - tStart) / 1000;
+                const decodeTimeSec = (tEnd - tFirstToken) / 1000;
+
+                const prefillSpeed = prefillTimeSec > 0 ? (usage.prompt_tokens / prefillTimeSec) : 0;
+                const decodeSpeed = decodeTimeSec > 0 ? (usage.completion_tokens / decodeTimeSec) : 0;
+
+                post({ 
+                    type: 'stats', 
+                    payload: `prefill: ${prefillSpeed.toFixed(4)} tok/s, decoding: ${decodeSpeed.toFixed(4)} tok/s (Prompt: ${usage.prompt_tokens} / Gen: ${usage.completion_tokens}) [F16: ${hasF16Support ? 'ON' : 'OFF'}]`
+                });
+            }
         }
+
         post({ type: 'complete', payload: fullText.trim() });
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (message.includes('interrupted')) {
-            // This is an expected error on user cancellation, treat it as a completion of the abort.
-            post({ type: 'complete', payload: '' }); // Send empty completion
+            post({ type: 'complete', payload: '' });
         } else {
              post({ type: 'error', payload: `Generation failed: ${message}` });
         }
@@ -113,21 +206,11 @@ const generate = async (prompt: string, options: any) => {
     }
 };
 
-// Helper to delete from Cache API directly since we disabled IndexedDB
 const deleteFromCacheAPI = async (modelUrlPart: string) => {
     try {
         if ('caches' in self) {
             const cacheKeys = await self.caches.keys();
             for (const key of cacheKeys) {
-                // WebLLM typically uses specific cache names, but often puts things in 'webllm/...' 
-                // or relies on the browser's default cache.
-                // Since we can't easily identify which cache bucket WebLLM used exactly without IDB,
-                // we iterate open caches and check for matching URLs if possible, or just log.
-                // NOTE: Without useIndexedDBCache, WebLLM relies on the browser's standard HTTP cache.
-                // Programmatically clearing the browser's implicit HTTP cache for a specific URL 
-                // is restricted in JS. We can only clear named caches opened via `caches.open`.
-                // However, WebLLM *might* create a named cache "webllm/wasm" or similar.
-                
                 const cache = await self.caches.open(key);
                 const requests = await cache.keys();
                 for (const request of requests) {
@@ -147,8 +230,6 @@ const deleteCache = async (modelId: string, customModel?: { modelUrl: string, mo
         await unloadEngine();
     }
     
-    // Even though we use Cache API, we create the config to pass to the delete function
-    // in case WebLLM has internal cleanup logic.
     let appConfig: AppConfig | undefined = undefined;
     if (customModel) {
         appConfig = {
@@ -165,8 +246,6 @@ const deleteCache = async (modelId: string, customModel?: { modelUrl: string, mo
 
     try {
         await deleteModelAllInfoInCache(modelId, appConfig);
-        
-        // Manually attempt to clean up Cache API as well, using the model ID/URL as a hint
         const modelUrlHint = customModel ? customModel.modelUrl : modelId;
         await deleteFromCacheAPI(modelUrlHint);
 
@@ -200,12 +279,9 @@ const clearAllCache = async (customModels: { id: string, modelUrl: string, model
             await deleteModelAllInfoInCache(customModel.id, customAppConfig);
         }
         
-        // Aggressive Cache API cleanup
         if ('caches' in self) {
              const keys = await self.caches.keys();
              for (const key of keys) {
-                 // Be careful not to delete PWA precache or other app data if possible.
-                 // WebLLM usually uses "webllm" prefix.
                  if (key.includes('webllm') || key.includes('model')) {
                      await self.caches.delete(key);
                  }
@@ -223,7 +299,6 @@ const clearAllCache = async (customModels: { id: string, modelUrl: string, model
 // --- EVENT LISTENER ---
 
 self.onmessage = async (event: MessageEvent) => {
-    // Reset timer on any interaction from the main thread
     if (event.data.type !== 'unload') {
          resetIdleTimer();
     }
@@ -236,7 +311,6 @@ self.onmessage = async (event: MessageEvent) => {
                 post({ type: 'loaded', payload: `Model ${payload.modelId} is already loaded.` });
                 return;
             }
-            // Use config with useIndexedDBCache: false
             await initializeEngine(payload.modelId, { ...prebuiltAppConfig, useIndexedDBCache: false });
             break;
         case 'load-custom': {
@@ -246,18 +320,20 @@ self.onmessage = async (event: MessageEvent) => {
                 return;
             }
 
+            // We construct the base config here, but initializeEngine will perform the F16 check and injection
             const customAppConfig: AppConfig = {
                 model_list: [{
                     "model_id": modelId,
                     "model": modelUrl,
                     "model_lib": modelLibUrl,
                     "low_resource_required": true,
-                    "required_features": ["shader-f16"],
+                    // Note: We don't hardcode required_features here anymore, 
+                    // initializeEngine will add it dynamically based on support.
                     "overrides": {
-                        "context_window_size": 4096
+                        "context_window_size": 2048,
                     }
                 }],
-                useIndexedDBCache: false, // Force Cache API
+                useIndexedDBCache: false, 
             };
             await initializeEngine(modelId, customAppConfig);
             break;
@@ -279,7 +355,6 @@ self.onmessage = async (event: MessageEvent) => {
             await clearAllCache(payload.customModels);
             break;
         case 'reset-timer':
-            // Timer is already reset at the top of the handler.
             break;
         default:
             post({ type: 'error', payload: `Unknown command: ${type}` });
