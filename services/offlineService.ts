@@ -205,13 +205,14 @@ export const translateOfflineStream = async (
         const sourceInstruction = fromLang === 'auto' 
             ? 'auto-detect the source language'
             : `from ${fromLang}`;
-        const prompt = `Translate the following ${sourceInstruction} text into concise ${toLang}: "${inputText}". \n Provide *only* the translated text. Do not include any additional explanations, commentary, or greetings.`;
+        const systemPrompt = `You are a professional translator. Translate the following ${sourceInstruction} text into concise ${toLang}. Provide *only* the translated text. Do not include any additional explanations, commentary, or greetings.`;
+        const userPrompt = `"${inputText}"`;
         
         return new Promise((resolve, reject) => {
             onChunkCallback = onChunk;
             onCompleteCallback = resolve;
             onErrorCallback = reject;
-            worker?.postMessage({ type: 'generate', payload: { prompt, options } });
+            worker?.postMessage({ type: 'generate', payload: { systemPrompt, userPrompt, options } });
         });
     };
 
@@ -223,13 +224,14 @@ export const translateOfflineStream = async (
             : `from ${fromLang}`;
 
         // Fix typos: tarn.get -> target, adaptatio -> adaptation
-        const prompt =   `Translate the following ${sourceInstruction} text into ${toLang}: "${inputText}". \n Provide *only* the translated text. Do not include any additional explanations, commentary, or greetings.\n Ensure that your translation is accurate and reads naturally in the target language. Pay attention to idiomatic expressions and cultural nuances that may require adaptation and maintain the original text format.`;
+        const systemPrompt = `You are a professional translator. Translate the following ${sourceInstruction} text into ${toLang}. Provide *only* the translated text. Do not include any additional explanations, commentary, or greetings.\n Ensure that your translation is accurate and reads naturally in the target language. Pay attention to idiomatic expressions and cultural nuances that may require adaptation and maintain the original text format.`;
+        const userPrompt = `"${inputText}"`;
         
         return new Promise((resolve, reject) => {
             onChunkCallback = null; // No UI streaming for intermediate steps
             onCompleteCallback = resolve;
             onErrorCallback = reject;
-            worker?.postMessage({ type: 'generate', payload: { prompt, options } });
+            worker?.postMessage({ type: 'generate', payload: { systemPrompt, userPrompt, options } });
         });
     };
 

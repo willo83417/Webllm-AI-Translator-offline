@@ -4,9 +4,9 @@ import type { Language, AsrModel, OfflineModel } from './types';
 export const LANGUAGES: Language[] = [
     { code: 'auto', name: 'languages.autoDetect' },
     { code: 'en', name: 'languages.english', asrCode: 'en' },
-    { code: 'zh-TW', name: 'languages.chineseTraditional', asrCode: 'zh' },
-    { code: 'zh-HK', name: 'languages.chineseTraditionalHK', asrCode: 'zh' },
-    { code: 'zh-CN', name: 'languages.chineseSimplified', asrCode: 'zh' },
+    { code: 'zh-Hant', name: 'languages.chineseTraditional', asrCode: 'zh' },
+    { code: 'zh-Hant-HK', name: 'languages.chineseTraditionalHK', asrCode: 'zh' },
+    { code: 'zh-Hans', name: 'languages.chineseSimplified', asrCode: 'zh' },
     { code: 'es', name: 'languages.spanish', asrCode: 'es' },
     { code: 'ja', name: 'languages.japanese', asrCode: 'ja' },
     { code: 'fr', name: 'languages.french', asrCode: 'fr' },
@@ -66,6 +66,15 @@ export const ASR_MODELS: AsrModel[] = [
             decoder_model_merged: 'q4f16',
         },
         size: '~600 MB'
+    },
+    {
+        id: 'Xenova/whisper-medium',
+        name: 'Whisper medium (q4f16)',
+        quantization: {
+            encoder_model: 'q4f16',
+            decoder_model_merged: 'q4f16',
+        },
+        size: '~500 MB'
     },
 	{
         id: 'Xenova/whisper-small',

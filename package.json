@@ -6,13 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-	 "deploy": "gh-pages -d dist",
+	  "deploy": "gh-pages -d dist",
     "preview": "vite preview"
   },
   "dependencies": {
     "@google/genai": "^1.23.0",
-    "@mlc-ai/web-llm": "^0.2.80",
-    "@huggingface/transformers": "^3.8.1",
+    "@mlc-ai/web-llm": "^0.2.82",
+    "@huggingface/transformers": "^4.0.0-next.7",
     "i18next": "^23.12.2",
     "i18next-browser-languagedetector": "^8.0.0",
     "gh-pages": "^6.3.0",
@@ -22,7 +22,7 @@
     "react-i18next": "^15.0.0",
     "react-webcam": "^7.2.0",
     "esearch-ocr": "^8.5.0",
-    "onnxruntime-web": "^1.23.2"
+    "onnxruntime-web": "^1.24.3"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

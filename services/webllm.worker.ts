@@ -141,7 +141,7 @@ const initializeEngine = async (modelId: string, appConfig?: AppConfig) => {
 };
 
 
-const generate = async (prompt: string, options: any) => {
+const generate = async (systemPrompt: string, userPrompt: string, options: any) => {
     if (!engine) {
         post({ type: 'error', payload: 'Offline model is not initialized.' });
         return;
@@ -153,7 +153,10 @@ const generate = async (prompt: string, options: any) => {
         let tFirstToken = 0;
         
         const stream = await engine.chat.completions.create({
-            messages: [{ role: 'user', content: prompt }],
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ],
             stream: true,
             stream_options: { include_usage: true },
             temperature: options.temperature,
@@ -199,11 +202,8 @@ const generate = async (prompt: string, options: any) => {
         } else {
              post({ type: 'error', payload: `Generation failed: ${message}` });
         }
-    } finally {
-        if (engine) {
-            await engine.resetChat();
-        }
     }
+    // Removed engine.resetChat() to allow KV cache reuse for the system prompt
 };
 
 const deleteFromCacheAPI = async (modelUrlPart: string) => {
@@ -339,7 +339,7 @@ self.onmessage = async (event: MessageEvent) => {
             break;
         }
         case 'generate':
-            await generate(payload.prompt, payload.options);
+            await generate(payload.systemPrompt, payload.userPrompt, payload.options);
             break;
         case 'abort':
             engine?.interruptGenerate();
